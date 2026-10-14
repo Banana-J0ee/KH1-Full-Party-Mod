@@ -1,0 +1,229 @@
+/*
+ * KH1 Full Party - lets Sora's whole party (both friends and the reserve member)
+ * fight at the same time in KINGDOM HEARTS FINAL MIX (PC, HD 1.5+2.5 ReMIX).
+ *
+ * The mod is one DLL that patches the running game in memory. It is loaded by
+ * OpenKH Panacea from mod/kh1/dll and does all its work from DllMain.
+ *
+ * Overview of the approach
+ *   The game keeps a four-entry party list (save +0x48e: Sora, friend 1,
+ *   friend 2, reserve) but only spawns the first three. The mod spawns the
+ *   reserve member as a fourth body in party slot 3 and widens every game table
+ *   that was sized for three party members:
+ *     - model memory pool and its block records (64 -> 80 blocks)
+ *     - weapon slots and voice-bank slots (3 -> 4)
+ *     - the party entity array 0x2d37280 (3 -> 4; the word after it was the
+ *       entity allocator cursor, which moves into mod memory)
+ *     - HUD gauges, the level-up prompt queue, the item pop-up, the party menu
+ *       figures (the fourth copy of each lives in mod memory)
+ *   The fourth member runs a second instance of the friend AI ("context B"):
+ *   the AI module's globals are swapped with a private copy around every AI
+ *   entry point.
+ */
+#pragma once
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+
+typedef uint8_t  u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef int8_t   s8;
+typedef int16_t  s16;
+typedef int32_t  s32;
+typedef int64_t  s64;
+
+/* ------------------------------------------------------------------ build */
+
+#define KH1PARTY_VERSION "1.0.2"
+
+/* -------------------------------------------------------------- addresses */
+
+/* Base of the game image, and the offsets between the Steam global build the
+ * RVAs below were taken from and the running build (0 on the global build).
+ * Code (.text) and data can move by different amounts; both are worked out at
+ * start-up (version.c). */
+extern u8 *g_base;
+extern s64 g_code_delta, g_data_delta;
+
+#define CODE_END_RVA 0x3af000u   /* .text ends here in the global build */
+
+/* Address of a game RVA in the running process. */
+#define A(rva) (g_base + (u32)(rva) + (((u32)(rva) < CODE_END_RVA) ? g_code_delta : g_data_delta))
+/* Typed access helpers. */
+#define G8(rva)   (*(u8  *)A(rva))
+#define G16(rva)  (*(u16 *)A(rva))
+#define G32(rva)  (*(u32 *)A(rva))
+#define GS32(rva) (*(s32 *)A(rva))
+#define G64(rva)  (*(u64 *)A(rva))
+#define GF(rva)   (*(float *)A(rva))
+#define GP(rva)   (*(u8 **)A(rva))
+/* Call a game function: FN(rva, return type, argument types...)(args) */
+#define FN(rva, ret, ...) ((ret (*)(__VA_ARGS__))A(rva))
+
+/* Field access on game objects. */
+#define F8(p, o)   (*(u8  *)((u8 *)(p) + (o)))
+#define FS8(p, o)  (*(s8  *)((u8 *)(p) + (o)))
+#define F16(p, o)  (*(u16 *)((u8 *)(p) + (o)))
+#define F32(p, o)  (*(u32 *)((u8 *)(p) + (o)))
+#define FS32(p, o) (*(s32 *)((u8 *)(p) + (o)))
+#define F64(p, o)  (*(u64 *)((u8 *)(p) + (o)))
+#define FF(p, o)   (*(float *)((u8 *)(p) + (o)))
+#define FP(p, o)   (*(u8 **)((u8 *)(p) + (o)))
+
+/* ------------------------------------------------------------- game data */
+
+/* Save data pointer; party list at +0x48e (4 bytes, 0xff = empty). */
+#define RVA_SAVE        0x2868ba0
+#define SAVE()          GP(RVA_SAVE)
+#define PARTY_LIST(i)   F8(SAVE(), 0x48e + (i))
+
+/* Party entity slots: 0 Sora, 1 friend, 2 friend, 3 the extra member. */
+#define RVA_PARTY       0x2d37280
+#define PARTY(i)        (((u8 **)A(RVA_PARTY))[i])
+#define SLOT3()         PARTY(3)
+
+/* Per-slot party state (0x190 each, three in the game, the fourth is ours). */
+#define RVA_SLOTSTATE   0x2d534a0
+
+/* Handle table: resolve a 32-bit handle stored in an object to a pointer. */
+#define RVA_HANDLE_GET  0x38adc0
+#define RVA_HANDLE_MAKE 0x38ad90
+#define HGET(h)         FN(RVA_HANDLE_GET, u8 *, u32)(h)
+
+/* Entity fields used here. */
+#define ENT_FLAGS     0x000   /* bit 0 hidden, 0x30 flag-stack bits */
+#define ENT_ID        0x004
+#define ENT_TYPE      0x006   /* 3 = party member */
+#define ENT_POS       0x010
+#define ENT_STATS_H   0x06c   /* handle: stats (hp +0x3c, voice channel +0xbd) */
+#define ENT_DESC_H    0x130   /* handle: actor descriptor (char id +0x4c, model block +0x55) */
+#define ENT_AI_H      0x144   /* handle: AI state */
+#define ENT_STATE     0x374   /* low 2 bits == 1: active */
+#define ENT_EVFLAGS   0x444
+
+static inline int ent_active(u8 *e) { return e && (F32(e, ENT_STATE) & 3) == 1; }
+
+/* Model memory pool. Each block is 256 KB. The game's pool has 64 blocks;
+ * the mod's copy has 96, laid out as:
+ *   0..63   the game's blocks (summons load into 52..63)
+ *   64..79  empty buffer: big summons spill up to ~2 blocks past block 63
+ *           (into padding the unmodded game leaves unused), so nothing of
+ *           ours may live there
+ *   80..95  the extra member's own area */
+#define RVA_SPMEM       0x0d2ada0
+#define RVA_SPREC       0x2869dd0     /* 0x50-byte record per block */
+#define SP_BLOCK        0x40000
+#define SP_BLOCKS_OLD   64
+#define SP_BLOCKS       96
+#define SP_REC          0x50
+#define SP_EXTRA_BLOCK  80
+#define SP_RECS_ALLOC   (SP_BLOCKS + 3)   /* + spare records past the end */
+
+/* Weapon slots (0x30 each) and voice-bank slots (0x22 each). */
+#define RVA_WSLOT       0x296b540
+#define RVA_VOICE       0x2d37160
+
+/* ------------------------------------------------------------ mod memory */
+
+extern u8 *g_spmem, *g_sprec, *g_wslot, *g_voice, *g_slot3, *g_gauge, *g_lv,
+          *g_menumtx, *g_itemwin, *g_w3buf;
+extern u8 **g_cursor, **g_aisrc;
+
+/* ----------------------------------------------------------------- hooks */
+
+/* Register state captured by a mid-function hook. The handler returns 0 to
+ * run the overwritten instructions and continue, or an address to jump to.
+ * The original rsp is (u8 *)ctx + 0xe0. */
+typedef struct Ctx {
+    u8  xmm[6][16];
+    u64 r15, r14, r13, r12, r11, r10, r9, r8;
+    u64 rdi, rsi, rbp, rbx, rdx, rcx, rax, rflags;
+} Ctx;
+#define CTX_RSP(c) ((u8 *)(c) + 0xe0)
+_Static_assert(offsetof(Ctx, r15) == 0x60 && offsetof(Ctx, rax) == 0xd0, "ctx layout");
+
+typedef u64 (*CtxHandler)(Ctx *);
+
+/* Function-entry hook wrappers take and forward all four register arguments
+ * (rcx, rdx, r8, r9), whatever the game function actually uses, so nothing
+ * the original expects is lost. */
+#define ARGS4 u64 a1_, u64 a2_, u64 a3_, u64 a4_
+#define CALL4(o) (((u64 (*)(u64, u64, u64, u64))(o))(a1_, a2_, a3_, a4_))
+
+/* A place in the game's code that is hooked: the bytes expected there and the
+ * offsets of rip-relative fields inside them (which are fixed up when the
+ * bytes are moved into a trampoline). */
+typedef struct HookSite {
+    const char *name;
+    u32 rva;
+    u8  len, nrel;
+    u8  reloff[4];   /* offset of each rel32 field */
+    u8  relend[4];   /* end of the instruction holding it */
+    u8  expect[24];
+} HookSite;
+
+typedef struct RipRef { u32 site; u8 extra; u32 off; } RipRef;
+
+/* core.c */
+void  log_open(void);
+void  logf_(const char *fmt, ...);
+void *near_alloc(size_t n);
+int   patch_bytes(u32 rva, const void *expect, const void *repl, size_t n, const char *name);
+int   patch_u8(u32 rva, u8 expect, u8 repl, const char *name);
+int   patch_riprel(u32 site, u8 extra, u32 old_target_rva, const void *new_target, const char *name);
+int   patch_nop_riprel(u32 site, u8 len, u8 dispoff, u32 old_target_rva, const char *name);
+void *hook_fn(const HookSite *h, void *handler);        /* returns the original */
+int   hook_ctx(const HookSite *h, CtxHandler handler);
+int   site_matches(const HookSite *h);
+void  patches_rollback(void);
+extern int g_patch_errors;
+extern char g_dir[260];
+
+/* version.c */
+int   version_detect(void);
+
+/* install.c */
+int   mod_install(void);
+
+/* debug.c */
+extern int g_debug;
+void  dbg_start(void);
+void  dbg_frame(void);
+long  veh(void *ep);
+
+/* party.c / ai.c / hud.c / scene.c shared state */
+extern s32  g_gauge_flags[3];
+#define g_gauge_on (g_gauge_flags[1])
+extern int  g_summoning;
+extern u8   g_ai_ready, g_ai_cur;
+extern int  g_hud_dx, g_hud_dy, g_hud_shift, g_mf_x0, g_mf_step, g_mf_pct;
+extern float g_menu_x4[4];
+
+u8  *party_find_ent_by_char(int ch);
+int  party_slot_of(u8 *ent);
+void ai_swap(void);
+int  ai_heal_install(void);
+void hud_menu_rebuild(void);
+
+/* tables.c */
+#define HOOK_DECL(n) extern const HookSite H_##n;
+HOOK_DECL(sp_release) HOOK_DECL(sp_clrfa) HOOK_DECL(sp_keep)
+HOOK_DECL(w_init) HOOK_DECL(w_clr6a) HOOK_DECL(w_clr6b) HOOK_DECL(w_seid)
+HOOK_DECL(v_fee0) HOOK_DECL(v_ff20) HOOK_DECL(v_ffc0)
+HOOK_DECL(party_init) HOOK_DECL(friendfilter) HOOK_DECL(slotassign) HOOK_DECL(spawnpos)
+HOOK_DECL(ev_cleartgt) HOOK_DECL(ev_aa190) HOOK_DECL(ev_aa230)
+HOOK_DECL(summon_ex1) HOOK_DECL(summon_ex2) HOOK_DECL(summon_start)
+HOOK_DECL(isfriend) HOOK_DECL(flag_bc730) HOOK_DECL(partyswap)
+HOOK_DECL(ai_tick) HOOK_DECL(ai_pre) HOOK_DECL(ai_post) HOOK_DECL(ai_init)
+HOOK_DECL(ai_destroy) HOOK_DECL(ai_reset) HOOK_DECL(ai_shutdown) HOOK_DECL(ai_start)
+HOOK_DECL(hud_fcd0) HOOK_DECL(hud_layout) HOOK_DECL(hud_create) HOOK_DECL(hud_flash)
+HOOK_DECL(hud_950) HOOK_DECL(hud_fade) HOOK_DECL(hud_970) HOOK_DECL(hud_9d0) HOOK_DECL(hud_pos)
+HOOK_DECL(lvlprompt) HOOK_DECL(lv_init) HOOK_DECL(lv_active) HOOK_DECL(lv_clear)
+HOOK_DECL(lv_tail) HOOK_DECL(hud_tail) HOOK_DECL(gauge_rebuild)
+HOOK_DECL(item_open) HOOK_DECL(item_close) HOOK_DECL(item_reset) HOOK_DECL(item_init)
+HOOK_DECL(item_task) HOOK_DECL(item_tail) HOOK_DECL(ev_orders)
+HOOK_DECL(menu_mtx) HOOK_DECL(menu_x) HOOK_DECL(pm_load)
+extern const RipRef R_SPREC[], R_WSLOT[], R_VOICE[];
+extern const int R_SPREC_N, R_WSLOT_N, R_VOICE_N;
