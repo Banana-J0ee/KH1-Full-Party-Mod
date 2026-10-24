@@ -1,5 +1,5 @@
-title: KH1 Full Party
-description: Lets the whole party fight at once - both friends plus the reserve member (e.g. Donald, Goofy and the world guest). Version 1.0.2.
+title: KH1 Full Party (Epic)
+description: Lets the whole party fight at once - both friends plus the reserve member (e.g. Donald, Goofy and the world guest). Version 1.0.2 for the Epic Games Store release.
 game: kh1
 assets:
 - name: dll/kh1party.dll

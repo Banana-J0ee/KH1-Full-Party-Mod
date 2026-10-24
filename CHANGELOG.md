@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2-epic
+
+Port of 1.0.2 to the Epic Games Store release. Same features and fixes as
+1.0.2; only the game addresses differ (see "The Epic port" in the README).
+
 ## 1.0.2
 
 Fixes

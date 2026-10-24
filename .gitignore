@@ -2,3 +2,5 @@ build/
 dist/
 tests/harness
 *.o
+work/
+__pycache__/

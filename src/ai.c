@@ -14,7 +14,10 @@
 #define AI_A_START   0x23f09c0
 #define AI_A_LEN1    0xbc0
 #define AI_A2_START  0x23f1590
-#define AI_A2_LEN    0x30
+/* Steam swaps 0x30 bytes here (the cure-target pointer plus padding). In the
+ * Epic build the next, unrelated global starts 0x20 bytes after the pointer,
+ * so only 0x20 bytes are swapped. */
+#define AI_A2_LEN    0x20
 #define AI_FORM      0x505de0      /* formation offsets, 0x20 bytes */
 
 u8 g_ai_ready;   /* AI module started, B initialised */

@@ -9,7 +9,6 @@
 #include "kh1party.h"
 
 u8  *g_base;
-s64  g_code_delta, g_data_delta;
 int  g_patch_errors;
 char g_dir[260];
 
