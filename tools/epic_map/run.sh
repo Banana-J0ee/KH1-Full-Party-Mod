@@ -27,13 +27,21 @@ cd "$here"
 python3 match.py
 python3 regions.py > /dev/null
 rm -f "$work/a_calls.txt"
-for pass in 1 2 3; do
-    python3 gen.py "$root/src/addrmap.c" > "$work/gen_report_$pass.txt"
+trace() {
     (cd "$root/tests" && gcc -O1 -w -DADDRLOG -I shim -include shim/windows.h -o "$work/h_log" harness.c \
         $(ls ../src/*.c | grep -v -e dllmain.c -e debug.c))
     "$work/h_log" "$work/epic.exe" 2> "$work/a_calls.new" | tail -1
-    sort -u "$work/a_calls.new" > "$work/a_calls.sorted"
+    sort -u "$work/a_calls.new" | grep '^A ' > "$work/a_calls.sorted" || true
+}
+# tracing passes with wide data ranges until the traced set stops changing
+for pass in 1 2 3 4; do
+    EPICMAP_WIDE=1 python3 gen.py "$root/src/addrmap.c" > "$work/gen_report_wide_$pass.txt"
+    trace
     if [ -f "$work/a_calls.txt" ] && cmp -s "$work/a_calls.sorted" "$work/a_calls.txt"; then break; fi
     mv "$work/a_calls.sorted" "$work/a_calls.txt"
 done
+# final table with tight ranges, then check the install on Epic with it
+pass=final
+python3 gen.py "$root/src/addrmap.c" > "$work/gen_report_$pass.txt"
+trace
 tail -3 "$work/gen_report_$pass.txt"

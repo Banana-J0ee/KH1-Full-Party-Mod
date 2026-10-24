@@ -379,7 +379,8 @@ u64 ai_start_hook(ARGS4)
     u64 r;
     to_a();
     r = CALL4(o_ai_start);
-    memcpy(g_ai_store, A(AI_A_START), sizeof g_ai_store);
+    memcpy(g_ai_store, A(AI_A_START), AI_A_LEN1);
+    memcpy(g_ai_store + (AI_A2_START - AI_A_START), A(AI_A2_START), AI_A2_LEN);
     if (!g_ai_ready)
         memcpy(g_form_store, g_form_init, sizeof g_form_store);
     g_ai_ready = 1;

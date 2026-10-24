@@ -234,9 +234,9 @@ int mod_install(void)
     g_patch_errors = 0;
     if (!version_detect() || !alloc_tables() ||
         !install_spmem() || !install_wslot() || !install_voice() || !install_party() ||
-        !install_ai() || !install_hud() || g_patch_errors) {
-        logf_("install failed (%d errors): all changes undone, the game runs unmodified",
-              g_patch_errors);
+        !install_ai() || !install_hud() || g_patch_errors || g_unmapped) {
+        logf_("install failed (%d errors, %d untranslated addresses): all changes undone, "
+              "the game runs unmodified", g_patch_errors, g_unmapped);
         patches_rollback();
         return 0;
     }

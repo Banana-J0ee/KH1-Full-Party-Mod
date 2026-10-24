@@ -10,6 +10,8 @@ extra=[0x281249c+0xdf0,0x281249c+0x1be0,0x28124a0+0xdf0,0x28124a0+0x1be0]+[0x52b
 need_ranges=[(0x52abb0,0x100),(0x28135e0,2*0xdf0),(0x23f09c0,0xbc0),(0x23f1590,0x20),(0x505de0,0x20),
              (0x2d37280,0x28),(0x2d534a0,0x190*4)]
 px=[p[0] for p in pts]
+# hex constants in the source that are sizes or flags, not addresses
+NOT_ADDR={0x20000,0x40000,0x1000080,0x3af000}
 def ddelta(x):
     c=dd.get(x)
     if c:
@@ -21,24 +23,38 @@ def ddelta(x):
     # require neighbours on both sides within 0x400 with same delta, or inside a region
     return m-x,'region'
 def span(x,d):
+    # Only the bytes around an address the mod actually uses: up to the next
+    # reference that moves by a different amount, and at most 0x200 bytes
+    # (8 in .rdata, where the constant pools are reordered). Larger blocks the
+    # mod copies are added from need_ranges after checking every reference
+    # inside them.
     i=bisect.bisect_right(px,x)
     while i<len(pts) and pts[i][1]==d and pts[i][0]-x<0x200000: i+=1
     end = pts[i][0] if i<len(pts) else x+0x1000
-    return min(end-x,0x200000)
+    cap = 8 if x < 0x4d5000 else 0x200
+    if os.environ.get('EPICMAP_WIDE'):   # tracing pass only: let the install run to the end
+        cap = 0x200000
+    return max(1, min(end - x, cap))
 entries=[]; report=[]; fail=[]
-code_addrs=sorted(set(a for a in inst if a<0x3af000)|set(a for a in lits if 0x1d000<=a<0x3af000))
+code_addrs=sorted((set(a for a in inst if a<0x3af000)|set(a for a in lits if 0x1d000<=a<0x3af000))-NOT_ADDR)
 for x in code_addrs:
     m,a=codemap.cmap(x)
     if m is None:
         (fail if x in inst else report).append('CODE %x unmapped'%x); continue
     entries.append((x,x+1,m-x))
-data_addrs=sorted(set(a for a in inst if a>=0x3af000)|set(a for a in lits if a>0x3af000)|set(extra))
+data_addrs=sorted((set(a for a in inst if a>=0x3af000)|set(a for a in lits if a>0x3af000)|set(extra))-NOT_ADDR)
 for x in data_addrs:
     d,why=ddelta(x)
     if d is None:
         (fail if x in inst else report).append('DATA %x %s'%(x,why)); continue
     sp=span(x,d)
     entries.append((x,x+sp,d)); report.append('DATA %x -> %x (%s) span %x'%(x,x+d,why,sp))
+for base,n in need_ranges:
+    d,why=ddelta(base)
+    inside=[p for p in pts if base<=p[0]<base+n]
+    if d is None or any(p[1]!=d for p in inside):
+        fail.append('RANGE %x+%x has references that move differently'%(base,n)); continue
+    entries.append((base,base+n,d)); report.append('BLOCK %x+%x delta %x (%d refs inside)'%(base,n,d,len(inside)))
 # merge / clip
 entries.sort()
 out=[]

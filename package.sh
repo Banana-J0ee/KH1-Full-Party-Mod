@@ -15,7 +15,7 @@ with zipfile.ZipFile('dist/KH1-Full-Party-Epic.zip', 'w', zipfile.ZIP_DEFLATED) 
     for d in ('src', 'tests', 'tools'):
         for root, _, names in os.walk(d):
             for n in sorted(names):
-                if n != 'harness':
+                if n != 'harness' and '__pycache__' not in root:
                     p = os.path.join(root, n)
                     z.write(p, p)
 PY
